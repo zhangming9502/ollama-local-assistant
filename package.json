@@ -68,6 +68,26 @@
         "command": "ollama.setModel",
         "title": "设置使用的模型",
         "category": "Ollama"
+      },
+      {
+        "command": "ollama.readFile",
+        "title": "读取文件并分析",
+        "category": "Ollama"
+      },
+      {
+        "command": "ollama.writeFile",
+        "title": "将 AI 输出写入文件",
+        "category": "Ollama"
+      },
+      {
+        "command": "ollama.listWorkspaceFiles",
+        "title": "列出工作区文件",
+        "category": "Ollama"
+      },
+      {
+        "command": "ollama.processFile",
+        "title": "处理当前文件",
+        "category": "Ollama"
       }
     ],
     "configuration": {

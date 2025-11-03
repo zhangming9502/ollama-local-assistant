@@ -216,4 +216,4 @@ MIT
 ### 贡献
 
 欢迎提交 Issue 和 Pull Request！
-[GitHub地址](https://github.com/zhangming9502/ollama-local-assistant/tree/master)
+[查看GitHub仓库](https://github.com/zhangming9502/ollama-local-assistant/tree/master)
