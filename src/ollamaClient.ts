@@ -7,20 +7,32 @@ export class OllamaClient {
     private baseUrl: string;
     private model: string;
     private timeout: number;
+    private useThirdParty: boolean;
+    private thirdPartyApiUrl: string;
+    private thirdPartyApiKey: string;
+    private thirdPartyModel: string;
 
-    constructor(baseUrl: string, model: string, timeout: number) {
+    constructor(baseUrl: string, model: string, timeout: number, useThirdParty: boolean = false, thirdPartyApiUrl: string = '', thirdPartyApiKey: string = '', thirdPartyModel: string = '') {
         this.baseUrl = baseUrl.replace(/\/$/, ''); // 移除尾部斜杠
         this.model = model;
         this.timeout = timeout;
+        this.useThirdParty = useThirdParty;
+        this.thirdPartyApiUrl = thirdPartyApiUrl;
+        this.thirdPartyApiKey = thirdPartyApiKey;
+        this.thirdPartyModel = thirdPartyModel;
     }
 
     /**
      * 更新配置
      */
-    updateConfig(baseUrl: string, model: string, timeout: number) {
+    updateConfig(baseUrl: string, model: string, timeout: number, useThirdParty: boolean = false, thirdPartyApiUrl: string = '', thirdPartyApiKey: string = '', thirdPartyModel: string = '') {
         this.baseUrl = baseUrl.replace(/\/$/, '');
         this.model = model;
         this.timeout = timeout;
+        this.useThirdParty = useThirdParty;
+        this.thirdPartyApiUrl = thirdPartyApiUrl;
+        this.thirdPartyApiKey = thirdPartyApiKey;
+        this.thirdPartyModel = thirdPartyModel;
     }
 
     /**
@@ -110,6 +122,11 @@ export class OllamaClient {
         systemPrompt?: string,
         modelName?: string
     ): Promise<string> {
+        // 如果使用第三方 API
+        if (this.useThirdParty) {
+            return await this.callThirdPartyAPI(prompt, systemPrompt, false);
+        }
+
         try {
             const model = modelName || this.model;
             const requestBody: any = {
@@ -158,6 +175,96 @@ export class OllamaClient {
     }
 
     /**
+     * 调用第三方 API（如 OpenAI）
+     */
+    private async callThirdPartyAPI(
+        prompt: string,
+        systemPrompt?: string,
+        stream: boolean = false,
+        onChunk?: (chunk: string) => void
+    ): Promise<string> {
+        if (!this.thirdPartyApiKey) {
+            throw new Error('未配置第三方 API Key');
+        }
+
+        const model = this.thirdPartyModel;
+        const messages: any[] = [];
+        
+        if (systemPrompt) {
+            messages.push({ role: 'system', content: systemPrompt });
+        }
+        messages.push({ role: 'user', content: prompt });
+
+        const requestBody: any = {
+            model: model,
+            messages: messages
+        };
+
+        if (stream) {
+            requestBody.stream = true;
+        }
+
+        const response = await this.fetchWithTimeout(this.thirdPartyApiUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${this.thirdPartyApiKey}`
+            },
+            body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`第三方 API 请求失败: ${response.status} ${response.statusText} - ${errorText}`);
+        }
+
+        if (stream && response.body) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let fullResponse = '';
+
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = line.substring(6);
+                            if (data === '[DONE]') {
+                                return fullResponse;
+                            }
+                            try {
+                                const json = JSON.parse(data);
+                                const content = json.choices?.[0]?.delta?.content || '';
+                                if (content && onChunk) {
+                                    onChunk(content);
+                                    fullResponse += content;
+                                }
+                            } catch (e) {
+                                // 忽略解析错误
+                            }
+                        }
+                    }
+                }
+            } finally {
+                reader.releaseLock();
+            }
+
+            return fullResponse;
+        } else {
+            const data: any = await response.json();
+            const content = data.choices?.[0]?.message?.content || data.choices?.[0]?.text || '';
+            return content;
+        }
+    }
+
+    /**
      * 流式生成（用于实时显示响应）
      * @param prompt 提示词
      * @param onChunk 接收每个响应块的回调函数
@@ -170,6 +277,11 @@ export class OllamaClient {
         systemPrompt?: string,
         modelName?: string
     ): Promise<void> {
+        // 如果使用第三方 API
+        if (this.useThirdParty) {
+            await this.callThirdPartyAPI(prompt, systemPrompt, true, onChunk);
+            return;
+        }
         try {
             const model = modelName || this.model;
             const requestBody: any = {

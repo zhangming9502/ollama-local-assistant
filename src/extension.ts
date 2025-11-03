@@ -5,6 +5,7 @@ import { OllamaClient } from './ollamaClient';
 // 全局变量
 let ollamaClient: OllamaClient;
 let outputChannel: vscode.OutputChannel;
+let controlPanel: vscode.WebviewPanel | undefined;
 
 /**
  * 初始化插件
@@ -19,9 +20,13 @@ export function activate(context: vscode.ExtensionContext) {
     const baseUrl = config.get<string>('baseUrl', 'http://127.0.0.1:11434');
     const model = config.get<string>('model', 'llama3');
     const timeout = config.get<number>('timeout', 60000);
+    const useThirdParty = config.get<boolean>('useThirdParty', false);
+    const thirdPartyApiUrl = config.get<string>('thirdPartyApiUrl', 'https://api.openai.com/v1/chat/completions');
+    const thirdPartyApiKey = config.get<string>('thirdPartyApiKey', '');
+    const thirdPartyModel = config.get<string>('thirdPartyModel', 'gpt-3.5-turbo');
 
     // 初始化客户端
-    ollamaClient = new OllamaClient(baseUrl, model, timeout);
+    ollamaClient = new OllamaClient(baseUrl, model, timeout, useThirdParty, thirdPartyApiUrl, thirdPartyApiKey, thirdPartyModel);
 
     // 注册命令
     const commands = [
@@ -34,7 +39,8 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('ollama.readFile', readFile),
         vscode.commands.registerCommand('ollama.writeFile', writeFile),
         vscode.commands.registerCommand('ollama.listWorkspaceFiles', listWorkspaceFiles),
-        vscode.commands.registerCommand('ollama.processFile', processFile)
+        vscode.commands.registerCommand('ollama.processFile', processFile),
+        vscode.commands.registerCommand('ollama.showControlPanel', () => showControlPanel(context))
     ];
 
     // 添加到订阅列表
@@ -48,7 +54,11 @@ export function activate(context: vscode.ExtensionContext) {
                 const baseUrl = config.get<string>('baseUrl', 'http://127.0.0.1:11434');
                 const model = config.get<string>('model', 'llama3');
                 const timeout = config.get<number>('timeout', 60000);
-                ollamaClient.updateConfig(baseUrl, model, timeout);
+                const useThirdParty = config.get<boolean>('useThirdParty', false);
+                const thirdPartyApiUrl = config.get<string>('thirdPartyApiUrl', 'https://api.openai.com/v1/chat/completions');
+                const thirdPartyApiKey = config.get<string>('thirdPartyApiKey', '');
+                const thirdPartyModel = config.get<string>('thirdPartyModel', 'gpt-3.5-turbo');
+                ollamaClient.updateConfig(baseUrl, model, timeout, useThirdParty, thirdPartyApiUrl, thirdPartyApiKey, thirdPartyModel);
                 outputChannel.appendLine('配置已更新');
             }
         })
@@ -1012,38 +1022,129 @@ async function generateCode() {
 }
 
 /**
- * 命令：设置使用的模型
+ * 命令：设置使用的模型（支持本地和第三方模型）
  */
 async function setModel() {
     try {
-        // 获取可用模型列表
-        const models = await ollamaClient.listModels();
-        
-        if (models.length === 0) {
-            vscode.window.showWarningMessage('未找到可用模型，请确保已安装模型');
+        // 首先让用户选择模型类型
+        const modelType = await vscode.window.showQuickPick(
+            [
+                { label: '🖥️ 本地模型 (Ollama)', value: 'local', description: '使用本地安装的 Ollama 模型' },
+                { label: '🌐 第三方模型 (OpenAI/Claude 等)', value: 'thirdparty', description: '使用需要 API Key 的在线模型服务' }
+            ],
+            { placeHolder: '选择模型类型' }
+        );
+
+        if (!modelType) {
             return;
         }
 
-        // 让用户选择模型
-        const selectedModel = await vscode.window.showQuickPick(models, {
-            placeHolder: '请选择要使用的模型'
-        });
+        const config = vscode.workspace.getConfiguration('ollama');
 
-        if (selectedModel) {
-            // 更新配置
-            const config = vscode.workspace.getConfiguration('ollama');
-            await config.update('model', selectedModel, vscode.ConfigurationTarget.Global);
+        if (modelType.value === 'local') {
+            // 使用本地模型
+            await config.update('useThirdParty', false, vscode.ConfigurationTarget.Global);
             
+            try {
+                // 获取可用模型列表
+                const models = await ollamaClient.listModels();
+                
+                if (models.length === 0) {
+                    vscode.window.showWarningMessage('未找到可用模型，请确保已安装模型');
+                    return;
+                }
+
+                // 让用户选择模型
+                const selectedModel = await vscode.window.showQuickPick(
+                    models.map(m => ({ label: m, value: m })),
+                    { placeHolder: '请选择要使用的本地模型' }
+                );
+
+                if (selectedModel) {
+                    // 更新配置
+                    await config.update('model', selectedModel.value, vscode.ConfigurationTarget.Global);
+                    
+                    // 更新客户端
+                    const baseUrl = config.get<string>('baseUrl', 'http://127.0.0.1:11434');
+                    const timeout = config.get<number>('timeout', 60000);
+                    const useThirdParty = config.get<boolean>('useThirdParty', false);
+                    const thirdPartyApiUrl = config.get<string>('thirdPartyApiUrl', '');
+                    const thirdPartyApiKey = config.get<string>('thirdPartyApiKey', '');
+                    const thirdPartyModel = config.get<string>('thirdPartyModel', '');
+                    ollamaClient.updateConfig(baseUrl, selectedModel.value, timeout, useThirdParty, thirdPartyApiUrl, thirdPartyApiKey, thirdPartyModel);
+                    
+                    vscode.window.showInformationMessage(`已切换到本地模型: ${selectedModel.value}`);
+                    outputChannel.appendLine(`已切换到本地模型: ${selectedModel.value}`);
+                }
+            } catch (error: any) {
+                const errorMessage = error.message || '获取模型列表失败';
+                vscode.window.showErrorMessage(`设置模型失败: ${errorMessage}`);
+                outputChannel.appendLine(`错误: ${errorMessage}`);
+            }
+        } else if (modelType.value === 'thirdparty') {
+            // 使用第三方模型
+            await config.update('useThirdParty', true, vscode.ConfigurationTarget.Global);
+            
+            // 获取或设置 API Key
+            let apiKey = config.get<string>('thirdPartyApiKey', '');
+            if (!apiKey) {
+                const inputKey = await vscode.window.showInputBox({
+                    prompt: '请输入第三方 API Key',
+                    placeHolder: '例如：sk-...',
+                    password: true,
+                    validateInput: (value) => {
+                        if (!value || value.trim().length === 0) {
+                            return 'API Key 不能为空';
+                        }
+                        return null;
+                    }
+                });
+
+                if (!inputKey) {
+                    return;
+                }
+
+                apiKey = inputKey;
+                await config.update('thirdPartyApiKey', apiKey, vscode.ConfigurationTarget.Global);
+            }
+
+            // 设置 API URL
+            let apiUrl = config.get<string>('thirdPartyApiUrl', 'https://api.openai.com/v1/chat/completions');
+            const inputUrl = await vscode.window.showInputBox({
+                prompt: '请输入第三方 API URL',
+                value: apiUrl,
+                placeHolder: '例如：https://api.openai.com/v1/chat/completions'
+            });
+
+            if (inputUrl) {
+                await config.update('thirdPartyApiUrl', inputUrl, vscode.ConfigurationTarget.Global);
+                apiUrl = inputUrl;
+            }
+
+            // 设置模型名称
+            let modelName = config.get<string>('thirdPartyModel', 'gpt-3.5-turbo');
+            const inputModel = await vscode.window.showInputBox({
+                prompt: '请输入第三方模型名称',
+                value: modelName,
+                placeHolder: '例如：gpt-3.5-turbo, gpt-4, claude-3-opus 等'
+            });
+
+            if (inputModel) {
+                await config.update('thirdPartyModel', inputModel, vscode.ConfigurationTarget.Global);
+                modelName = inputModel;
+            }
+
             // 更新客户端
             const baseUrl = config.get<string>('baseUrl', 'http://127.0.0.1:11434');
+            const localModel = config.get<string>('model', 'llama3');
             const timeout = config.get<number>('timeout', 60000);
-            ollamaClient.updateConfig(baseUrl, selectedModel, timeout);
+            ollamaClient.updateConfig(baseUrl, localModel, timeout, true, apiUrl, apiKey, modelName);
             
-            vscode.window.showInformationMessage(`已切换到模型: ${selectedModel}`);
-            outputChannel.appendLine(`已切换到模型: ${selectedModel}`);
+            vscode.window.showInformationMessage(`已切换到第三方模型: ${modelName}`);
+            outputChannel.appendLine(`已切换到第三方模型: ${modelName}`);
         }
     } catch (error: any) {
-        const errorMessage = error.message || '获取模型列表失败';
+        const errorMessage = error.message || '设置模型失败';
         vscode.window.showErrorMessage(`设置模型失败: ${errorMessage}`);
         outputChannel.appendLine(`错误: ${errorMessage}`);
     }
@@ -1424,9 +1525,345 @@ async function processFile() {
 }
 
 /**
+ * 显示操作面板（可拖拽、可缩放）
+ */
+function showControlPanel(context: vscode.ExtensionContext) {
+    // 如果面板已存在，显示它
+    if (controlPanel) {
+        controlPanel.reveal();
+        return;
+    }
+
+    // 创建 Webview 面板
+    controlPanel = vscode.window.createWebviewPanel(
+        'ollamaControlPanel',
+        'Ollama 操作面板',
+        vscode.ViewColumn.Beside,
+        {
+            enableScripts: true,
+            retainContextWhenHidden: true,
+            enableFindWidget: false
+        }
+    );
+
+    // 获取当前配置
+    const config = vscode.workspace.getConfiguration('ollama');
+    const currentModel = config.get<string>('model', 'llama3');
+    const useThirdParty = config.get<boolean>('useThirdParty', false);
+    const thirdPartyModel = config.get<string>('thirdPartyModel', 'gpt-3.5-turbo');
+
+    // 设置 Webview 内容
+    controlPanel.webview.html = getControlPanelHtml(controlPanel.webview, currentModel, useThirdParty, thirdPartyModel);
+
+    // 处理来自 Webview 的消息
+    controlPanel.webview.onDidReceiveMessage(
+        async (message) => {
+            switch (message.command) {
+                case 'askQuestion':
+                    await askQuestion();
+                    break;
+                case 'generateCode':
+                    await generateCode();
+                    break;
+                case 'refactorCode':
+                    await refactorCode();
+                    break;
+                case 'explainCode':
+                    await explainCode();
+                    break;
+                case 'selectModel':
+                    await setModel();
+                    // 更新面板中的模型显示
+                    const newConfig = vscode.workspace.getConfiguration('ollama');
+                    const newModel = newConfig.get<string>('model', 'llama3');
+                    const newUseThirdParty = newConfig.get<boolean>('useThirdParty', false);
+                    const newThirdPartyModel = newConfig.get<string>('thirdPartyModel', 'gpt-3.5-turbo');
+                    if (controlPanel) {
+                        controlPanel.webview.html = getControlPanelHtml(controlPanel.webview, newModel, newUseThirdParty, newThirdPartyModel);
+                    }
+                    break;
+                case 'close':
+                    controlPanel?.dispose();
+                    break;
+            }
+        },
+        undefined,
+        context.subscriptions
+    );
+
+    // 面板关闭时清理
+    controlPanel.onDidDispose(
+        () => {
+            controlPanel = undefined;
+        },
+        null,
+        context.subscriptions
+    );
+}
+
+/**
+ * 生成操作面板的 HTML
+ */
+function getControlPanelHtml(webview: vscode.Webview, currentModel: string, useThirdParty: boolean, thirdPartyModel: string): string {
+    const modelDisplay = useThirdParty ? `第三方: ${thirdPartyModel}` : `本地: ${currentModel}`;
+    
+    return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ollama 操作面板</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .panel-header {
+            background: var(--vscode-titleBar-activeBackground);
+            color: var(--vscode-titleBar-activeForeground);
+            padding: 10px 15px;
+            cursor: move;
+            user-select: none;
+            border-bottom: 1px solid var(--vscode-panel-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-shrink: 0;
+        }
+        
+        .panel-title {
+            font-weight: 600;
+            font-size: 13px;
+        }
+        
+        .resize-handle {
+            width: 4px;
+            height: 4px;
+            background: var(--vscode-panel-border);
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            cursor: nwse-resize;
+            z-index: 1000;
+        }
+        
+        .panel-content {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        
+        .model-info {
+            padding: 12px;
+            background: var(--vscode-input-background);
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 4px;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .model-label {
+            color: var(--vscode-descriptionForeground);
+        }
+        
+        .btn-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .action-btn {
+            padding: 14px 20px;
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+            text-align: left;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .action-btn:hover {
+            background: var(--vscode-button-hoverBackground);
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+        
+        .action-btn:active {
+            transform: translateY(0);
+        }
+        
+        .action-icon {
+            font-size: 18px;
+            width: 24px;
+            text-align: center;
+        }
+        
+        .close-btn {
+            background: transparent;
+            border: none;
+            color: var(--vscode-titleBar-activeForeground);
+            cursor: pointer;
+            font-size: 16px;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        
+        .close-btn:hover {
+            background: rgba(255,255,255,0.1);
+        }
+        
+        #panel {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 350px;
+            min-width: 300px;
+            max-width: 90vw;
+            min-height: 400px;
+            max-height: 90vh;
+            background: var(--vscode-editor-background);
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 8px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            display: flex;
+            flex-direction: column;
+            z-index: 1000;
+            resize: both;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+    <div id="panel">
+        <div class="panel-header" id="header">
+            <span class="panel-title">🤖 Ollama 操作面板</span>
+            <button class="close-btn" onclick="closePanel()">×</button>
+        </div>
+        <div class="resize-handle"></div>
+        <div class="panel-content">
+            <div class="model-info">
+                <span class="model-label">当前模型:</span>
+                <span id="model-name">${modelDisplay}</span>
+            </div>
+            
+            <div class="btn-group">
+                <button class="action-btn" onclick="vscode.postMessage({command: 'askQuestion'})">
+                    <span class="action-icon">❓</span>
+                    <span>提问</span>
+                </button>
+                
+                <button class="action-btn" onclick="vscode.postMessage({command: 'generateCode'})">
+                    <span class="action-icon">💡</span>
+                    <span>生成代码</span>
+                </button>
+                
+                <button class="action-btn" onclick="vscode.postMessage({command: 'refactorCode'})">
+                    <span class="action-icon">🔧</span>
+                    <span>重构代码</span>
+                </button>
+                
+                <button class="action-btn" onclick="vscode.postMessage({command: 'explainCode'})">
+                    <span class="action-icon">📖</span>
+                    <span>解释代码</span>
+                </button>
+                
+                <button class="action-btn" onclick="vscode.postMessage({command: 'selectModel'})">
+                    <span class="action-icon">⚙️</span>
+                    <span>选择模型</span>
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const vscode = acquireVsCodeApi();
+        const panel = document.getElementById('panel');
+        const header = document.getElementById('header');
+        
+        let isDragging = false;
+        let currentX = 0;
+        let currentY = 0;
+        let initialX = 0;
+        let initialY = 0;
+        
+        // 拖拽功能
+        header.addEventListener('mousedown', (e) => {
+            if (e.button === 0) {
+                isDragging = true;
+                initialX = e.clientX - currentX;
+                initialY = e.clientY - currentY;
+                header.style.cursor = 'grabbing';
+            }
+        });
+        
+        document.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                e.preventDefault();
+                currentX = e.clientX - initialX;
+                currentY = e.clientY - initialY;
+                
+                const maxX = window.innerWidth - panel.offsetWidth;
+                const maxY = window.innerHeight - panel.offsetHeight;
+                
+                currentX = Math.max(0, Math.min(currentX, maxX));
+                currentY = Math.max(0, Math.min(currentY, maxY));
+                
+                panel.style.left = currentX + 'px';
+                panel.style.top = currentY + 'px';
+                panel.style.transform = 'none';
+            }
+        });
+        
+        document.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                header.style.cursor = 'move';
+            }
+        });
+        
+        // 初始化位置
+        panel.style.left = '50%';
+        panel.style.top = '50%';
+        
+        // 关闭面板
+        function closePanel() {
+            panel.style.display = 'none';
+            vscode.postMessage({command: 'close'});
+        }
+    </script>
+</body>
+</html>`;
+}
+
+/**
  * 插件停用时的清理工作
  */
 export function deactivate() {
     outputChannel?.dispose();
+    controlPanel?.dispose();
 }
 

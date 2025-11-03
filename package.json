@@ -88,6 +88,12 @@
         "command": "ollama.processFile",
         "title": "处理当前文件",
         "category": "Ollama"
+      },
+      {
+        "command": "ollama.showControlPanel",
+        "title": "显示操作面板",
+        "icon": "$(dashboard)",
+        "category": "Ollama"
       }
     ],
     "configuration": {
@@ -107,6 +113,26 @@
           "type": "number",
           "default": 60000,
           "description": "API 请求超时时间（毫秒）"
+        },
+        "ollama.useThirdParty": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否使用第三方模型服务（如 OpenAI、Claude 等）"
+        },
+        "ollama.thirdPartyApiUrl": {
+          "type": "string",
+          "default": "https://api.openai.com/v1/chat/completions",
+          "description": "第三方模型 API 地址"
+        },
+        "ollama.thirdPartyApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "第三方模型 API Key"
+        },
+        "ollama.thirdPartyModel": {
+          "type": "string",
+          "default": "gpt-3.5-turbo",
+          "description": "第三方模型名称"
         }
       }
     }
