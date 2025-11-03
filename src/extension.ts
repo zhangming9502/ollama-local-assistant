@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
 import { OllamaClient } from './ollamaClient';
 
 // 全局变量
@@ -399,6 +400,304 @@ async function explainCode() {
 }
 
 /**
+ * 简单的 diff 算法：计算两段文本的差异（逐行比对）
+ */
+interface DiffBlock {
+    type: 'equal' | 'delete' | 'insert';
+    oldLines: string[];
+    newLines: string[];
+    oldStart: number;
+    newStart: number;
+}
+
+function computeDiff(oldText: string, newText: string): DiffBlock[] {
+    const oldLines = oldText.split('\n');
+    const newLines = newText.split('\n');
+    const blocks: DiffBlock[] = [];
+    
+    let oldIndex = 0;
+    let newIndex = 0;
+    
+    // 简单的最长公共子序列算法
+    while (oldIndex < oldLines.length || newIndex < newLines.length) {
+        if (oldIndex >= oldLines.length) {
+            // 只有新代码
+            blocks.push({
+                type: 'insert',
+                oldLines: [],
+                newLines: newLines.slice(newIndex),
+                oldStart: oldIndex,
+                newStart: newIndex
+            });
+            break;
+        }
+        
+        if (newIndex >= newLines.length) {
+            // 只有旧代码
+            blocks.push({
+                type: 'delete',
+                oldLines: oldLines.slice(oldIndex),
+                newLines: [],
+                oldStart: oldIndex,
+                newStart: newIndex
+            });
+            break;
+        }
+        
+        if (oldLines[oldIndex].trim() === newLines[newIndex].trim()) {
+            // 相同的行，收集连续的相同行
+            const equalLines: string[] = [];
+            let equalOldStart = oldIndex;
+            let equalNewStart = newIndex;
+            
+            while (oldIndex < oldLines.length && 
+                   newIndex < newLines.length && 
+                   oldLines[oldIndex].trim() === newLines[newIndex].trim()) {
+                equalLines.push(oldLines[oldIndex]);
+                oldIndex++;
+                newIndex++;
+            }
+            
+            if (equalLines.length > 0) {
+                blocks.push({
+                    type: 'equal',
+                    oldLines: equalLines,
+                    newLines: equalLines,
+                    oldStart: equalOldStart,
+                    newStart: equalNewStart
+                });
+            }
+        } else {
+            // 不同的行，尝试找到下一个匹配点
+            let foundMatch = false;
+            let lookAhead = 1;
+            const maxLookAhead = Math.min(10, Math.max(oldLines.length - oldIndex, newLines.length - newIndex));
+            
+            // 向前查找匹配
+            while (lookAhead <= maxLookAhead && !foundMatch) {
+                // 检查旧代码向后 lookAhead 行是否匹配新代码
+                if (oldIndex + lookAhead < oldLines.length) {
+                    for (let i = newIndex; i < Math.min(newIndex + lookAhead + 5, newLines.length); i++) {
+                        if (oldLines[oldIndex + lookAhead].trim() === newLines[i].trim()) {
+                            // 找到匹配，记录差异块
+                            blocks.push({
+                                type: 'delete',
+                                oldLines: oldLines.slice(oldIndex, oldIndex + lookAhead),
+                                newLines: [],
+                                oldStart: oldIndex,
+                                newStart: newIndex
+                            });
+                            oldIndex += lookAhead;
+                            foundMatch = true;
+                            break;
+                        }
+                    }
+                }
+                
+                // 检查新代码向后 lookAhead 行是否匹配旧代码
+                if (!foundMatch && newIndex + lookAhead < newLines.length) {
+                    for (let i = oldIndex; i < Math.min(oldIndex + lookAhead + 5, oldLines.length); i++) {
+                        if (newLines[newIndex + lookAhead].trim() === oldLines[i].trim()) {
+                            // 找到匹配，记录差异块
+                            blocks.push({
+                                type: 'insert',
+                                oldLines: [],
+                                newLines: newLines.slice(newIndex, newIndex + lookAhead),
+                                oldStart: oldIndex,
+                                newStart: newIndex
+                            });
+                            newIndex += lookAhead;
+                            foundMatch = true;
+                            break;
+                        }
+                    }
+                }
+                
+                lookAhead++;
+            }
+            
+            if (!foundMatch) {
+                // 没有找到匹配，记录剩余的差异
+                blocks.push({
+                    type: 'delete',
+                    oldLines: oldLines.slice(oldIndex),
+                    newLines: newLines.slice(newIndex),
+                    oldStart: oldIndex,
+                    newStart: newIndex
+                });
+                blocks.push({
+                    type: 'insert',
+                    oldLines: [],
+                    newLines: newLines.slice(newIndex),
+                    oldStart: oldIndex,
+                    newStart: newIndex
+                });
+                break;
+            }
+        }
+    }
+    
+    return blocks;
+}
+
+/**
+ * 使用 VS Code diff 编辑器显示代码差异
+ */
+async function showDiffView(originalUri: vscode.Uri, refactoredUri: vscode.Uri): Promise<void> {
+    await vscode.commands.executeCommand('vscode.diff', originalUri, refactoredUri, '原始代码 ↔ 重构后代码');
+}
+
+/**
+ * 交互式合并代码差异（逐块选择）
+ */
+async function interactiveMerge(
+    editor: vscode.TextEditor,
+    selectionRange: vscode.Range,
+    oldCode: string,
+    newCode: string
+): Promise<boolean> {
+    const diffBlocks = computeDiff(oldCode, newCode);
+    
+    // 过滤掉相同的内容，只显示需要用户决策的差异块
+    const decisionBlocks = diffBlocks.filter(block => block.type !== 'equal');
+    
+    if (decisionBlocks.length === 0) {
+        vscode.window.showInformationMessage('代码完全相同，无需合并');
+        return false;
+    }
+    
+    // 让用户选择合并模式
+    const mergeMode = await vscode.window.showQuickPick(
+        [
+            { label: '📊 使用 Diff 编辑器查看（推荐）', value: 'diff', description: '在新窗口中查看完整差异' },
+            { label: '✅ 逐块合并', value: 'block', description: '逐块选择接受哪些改动' },
+            { label: '✅ 全部接受', value: 'all', description: '接受所有重构改动' },
+            { label: '✗ 取消', value: 'cancel', description: '不应用任何改动' }
+        ],
+        { placeHolder: '选择合并方式' }
+    );
+    
+    if (!mergeMode || mergeMode.value === 'cancel') {
+        return false;
+    }
+    
+    if (mergeMode.value === 'diff') {
+        // 创建临时文件用于 diff 对比
+        const tempDir = vscode.Uri.joinPath(vscode.Uri.file(os.tmpdir()), 'ollama-refactor');
+        try {
+            await vscode.workspace.fs.createDirectory(tempDir);
+        } catch {
+            // 目录可能已存在
+        }
+        
+        const originalUri = vscode.Uri.joinPath(tempDir, 'original.txt');
+        const refactoredUri = vscode.Uri.joinPath(tempDir, 'refactored.txt');
+        
+        const encoder = new TextEncoder();
+        await vscode.workspace.fs.writeFile(originalUri, encoder.encode(oldCode));
+        await vscode.workspace.fs.writeFile(refactoredUri, encoder.encode(newCode));
+        
+        // 设置语言标识
+        const language = editor.document.languageId;
+        await vscode.workspace.openTextDocument(originalUri).then(doc => {
+            vscode.languages.setTextDocumentLanguage(doc, language);
+        });
+        await vscode.workspace.openTextDocument(refactoredUri).then(doc => {
+            vscode.languages.setTextDocumentLanguage(doc, language);
+        });
+        
+        await showDiffView(originalUri, refactoredUri);
+        
+        // 询问是否接受
+        const acceptAfterDiff = await vscode.window.showQuickPick(
+            [
+                { label: '✓ 接受重构后的代码', value: 'yes' },
+                { label: '✗ 取消', value: 'no' }
+            ],
+            { placeHolder: '在 diff 编辑器中查看差异后，是否接受重构后的代码？' }
+        );
+        
+        if (acceptAfterDiff?.value === 'yes') {
+            await editor.edit(editBuilder => {
+                editBuilder.replace(selectionRange, newCode);
+            });
+            return true;
+        }
+        
+        return false;
+    } else if (mergeMode.value === 'all') {
+        // 全部接受
+        await editor.edit(editBuilder => {
+            editBuilder.replace(selectionRange, newCode);
+        });
+        return true;
+    } else if (mergeMode.value === 'block') {
+        // 逐块合并
+        let mergedCode = '';
+        let decisionBlockIndex = 0;
+        
+        for (const block of diffBlocks) {
+            if (block.type === 'equal') {
+                // 相同内容直接添加
+                mergedCode += block.oldLines.join('\n') + '\n';
+            } else {
+                // 差异块，让用户选择
+                decisionBlockIndex++;
+                const oldBlockText = block.oldLines.join('\n');
+                const newBlockText = block.newLines.join('\n');
+                
+                // 格式化显示文本（显示前几行）
+                const oldPreview = oldBlockText.split('\n').slice(0, 3).join(' | ').substring(0, 60);
+                const newPreview = newBlockText.split('\n').slice(0, 3).join(' | ').substring(0, 60);
+                
+                const choice = await vscode.window.showQuickPick(
+                    [
+                        { 
+                            label: '✅ 接受新代码', 
+                            value: 'new',
+                            description: newBlockText ? `新: ${newPreview}${newBlockText.length > 60 ? '...' : ''}` : '（新代码为空）'
+                        },
+                        { 
+                            label: '↩️ 保留原代码', 
+                            value: 'old',
+                            description: oldBlockText ? `原: ${oldPreview}${oldBlockText.length > 60 ? '...' : ''}` : '（原代码为空）'
+                        },
+                        { 
+                            label: '✗ 取消合并', 
+                            value: 'cancel'
+                        }
+                    ],
+                    { 
+                        placeHolder: `选择如何处理此差异块 (${decisionBlockIndex}/${decisionBlocks.length})`
+                    }
+                );
+                
+                if (!choice || choice.value === 'cancel') {
+                    return false;
+                }
+                
+                if (choice.value === 'new') {
+                    mergedCode += newBlockText + '\n';
+                } else {
+                    mergedCode += oldBlockText + '\n';
+                }
+            }
+        }
+        
+        // 应用合并后的代码
+        mergedCode = mergedCode.trimEnd();
+        await editor.edit(editBuilder => {
+            editBuilder.replace(selectionRange, mergedCode);
+        });
+        
+        vscode.window.showInformationMessage('✓ 代码已逐块合并完成');
+        return true;
+    }
+    
+    return false;
+}
+
+/**
  * 从 AI 响应中提取代码内容（去除 markdown 格式和额外文本）
  */
 function extractCode(response: string): string {
@@ -479,29 +778,18 @@ async function refactorCode() {
         outputChannel.appendLine('===');
         outputChannel.show(true);
         
-        // 询问用户是否确认应用重构结果
-        const shouldApply = await vscode.window.showQuickPick(
-            [
-                { label: '✓ 确认应用', value: 'yes', description: '将重构后的代码覆盖选中的代码' },
-                { label: '✗ 取消', value: 'no', description: '不应用重构结果' }
-            ],
-            { placeHolder: '请确认重构后的代码是否满足要求，确认后将覆盖选中的代码' }
-        );
-
-        if (shouldApply?.value === 'yes' && editor) {
-            // 再次获取编辑器（确保编辑器仍然存在）
-            const currentEditor = vscode.window.activeTextEditor;
-            if (!currentEditor) {
-                vscode.window.showWarningMessage('编辑器已关闭，无法应用重构结果');
-                return;
-            }
-            
-            // 应用重构后的代码
-            await currentEditor.edit(editBuilder => {
-                editBuilder.replace(selectionRange, code);
-            });
-            
-            vscode.window.showInformationMessage('✓ 代码已重构并应用到文件中');
+        // 再次获取编辑器（确保编辑器仍然存在）
+        const currentEditor = vscode.window.activeTextEditor;
+        if (!currentEditor) {
+            vscode.window.showWarningMessage('编辑器已关闭，无法应用重构结果');
+            return;
+        }
+        
+        // 使用交互式合并功能
+        const merged = await interactiveMerge(currentEditor, selectionRange, selection, code);
+        
+        if (merged) {
+            vscode.window.showInformationMessage('✓ 代码重构已完成');
             outputChannel.appendLine('✓ 重构后的代码已应用到文件');
         } else {
             outputChannel.appendLine('✗ 用户取消应用重构结果');
