@@ -2,8 +2,13 @@
 .vscode-test/**
 src/**
 .gitignore
+.gitattributes
+.git/
 tsconfig.json
 **/*.map
 **/*.ts
 node_modules/**
+*.vsix
+.DS_Store
+*.log
 

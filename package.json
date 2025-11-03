@@ -1,20 +1,40 @@
 {
   "name": "ollama-local-assistant",
-  "displayName": "Ollama 本地大模型助手",
-  "description": "在 VS Code 中使用本地 Ollama 大模型进行代码辅助",
+  "displayName": "Ollama Local Assistant",
+  "description": "Use local Ollama AI models in VS Code for code assistance, explanation, refactoring, and generation",
   "version": "1.0.0",
   "publisher": "zhangming9502",
   "author": "zhangming9502",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zhangming9502/ollama-local-assistant.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zhangming9502/ollama-local-assistant/issues"
+  },
+  "homepage": "https://github.com/zhangming9502/ollama-local-assistant#readme",
+  "keywords": [
+    "ollama",
+    "ai",
+    "llm",
+    "code-assistant",
+    "code-generation",
+    "code-explanation",
+    "refactoring",
+    "local-ai",
+    "machine-learning"
+  ],
   "engines": {
     "vscode": "^1.80.0"
   },
   "categories": [
     "Other",
-    "Machine Learning"
+    "Machine Learning",
+    "Snippets"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:ollama.checkConnection"
+    "onStartupFinished"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -74,7 +94,9 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "publish": "vsce publish"
   },
   "devDependencies": {
     "@types/node": "^18.15.0",
